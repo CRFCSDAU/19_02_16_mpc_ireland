@@ -1,0 +1,1054 @@
+---
+title: ''
+author: ''
+date: ''
+output:
+  word_document:
+    reference_docx: style.1.docx
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include = FALSE}
+
+  knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE, 
+                        fig.width  = 5 * 1.67, fig.height = 5)
+
+  load("data.RData")
+  data_cfa <- data; rm(data) # Data set with no missings for CFA items
+  
+  load("data_full.RData")
+
+  source("scripts/functions.R")
+
+  library(pander)
+  library(ggrepel)
+  library(tidyverse)
+  library(viridis)
+  library(likert)
+  library(rms)
+  library(Hmisc)
+  library(broom)
+  library(lavaan)
+  library(ggbeeswarm)
+  library(gridExtra)
+  library(grid)
+  library(knitr)
+  
+  d <- datadist(data)
+  options(datadist = "d")
+  
+```
+
+
+```{r plot_function}
+
+  likert_data <- function(data, q_stub, q_labs){
+    
+    q_levs <- names(select(data, starts_with(q_stub)))
+    
+    likert_labs <- c("Strongly disagree",	"Disagree",
+                     "Neither agree nor disagree", "Agree",	"Strongly agree")
+    
+# Reshape data to long, tack on questions and response labels, 
+# then go back to wide 
+    df <- data %>%
+      gather(question, response, starts_with(q_stub)) %>%
+      mutate(question = factor(question, levels = q_levs, labels = q_labs), 
+             response = factor(response, levels = likert_labs)) %>%
+      spread(question, response)
+
+# df <- df[complete.cases(df), ] # Keep just the complete cases for that 
+# subset of Qs
+    
+    class(df) <- class(df)[3] # likert can't handle the tibble
+    df <- df[order(names(df))]
+    df$all <- "All"
+    df$all <- factor(df$all, levels = c("All", "Other"))
+    return(df)
+  }
+
+# Plot the data
+  
+    likert_plot_group <- function(data, start, end, group, ...){
+      plot(likert(data[start:end], grouping = data[[group]]), 
+         col = viridis(5), panel.strip.color = "white", wrap = 100) +
+      guides(fill = guide_legend(title = "", nrow = 1, byrow = TRUE)) +
+      theme_minimal() +
+      ylab("") +
+      theme(panel.grid = element_blank(), 
+            legend.position = "bottom", 
+            legend.key.size = unit(0.5,"line"))
+  }
+
+```
+
+# Respondent characteristics
+
+These are based on the full data set (n = `r nrow(data)`) with no observations dropped for missing data.
+
+```{r table1_data}
+
+  descript <- select(data, 
+                     sex, age, age_groups, yearsonregister, years_groups, 
+                     enrolledonscheme, division, status,
+                     hours, role, servicemodel, 
+                     country, country_groups, county_dublin, passport_ireland)
+
+```
+
+```{r table1_describe}
+
+  data_frame(Variable       = name.1(descript),
+             N              = n.miss(descript),
+             "Mean SD"      = summary.1(descript),
+             "Median [IQR]" = med.iqr(descript),
+             "(Min, Max)"   = min.max(descript)) %>% knitr::kable()
+  
+```
+
+```{r dfsummary_table1, eval = knitr::opts_knit$get("rmarkdown.pandoc.to") == "html"}
+
+  print(summarytools::dfSummary(descript, style = "grid", plain.ascii = FALSE), 
+    method = "render")
+
+```
+
+# Survey items and intent
+
+These are based on the full data set (n = `r nrow(data)`) with no observations dropped for missing data.
+
+## F1: Items 1-7 & 21: Attitudes to Maintenance of Professional Competence
+
+```{r dfsummary_f1, eval = knitr::opts_knit$get("rmarkdown.pandoc.to") == "html"}
+
+  df <- select(data, starts_with("mpc_"), starts_with("part_"), agree_21_tickbox)
+
+  print(summarytools::dfSummary(df, style = "grid", plain.ascii = FALSE), 
+        method = "render")
+
+```
+
+Do you argree with the following statements about the MPC?
+```{r mpc_likert}
+
+  labs <- c(
+    "01. Reassures patients and the public that doctors are fit to practice",
+    "02. Encourages doctors to continually learn and keep up to date",
+    "03. Raises the standard of practice of all doctors "
+  )
+
+  mpc <- likert_data(data, "mpc_", labs) 
+  likert_plot_group(mpc, 1, length(labs), "all") +
+    theme(axis.text.y = element_blank())
+
+```
+
+By intent to comply (yes/no)
+```{r mpc_likert_intends}
+
+  likert_plot_group(mpc, 1, length(labs), "binary_intention") 
+
+```
+
+Do you argree with the following statements about personal impact of participation?
+```{r part_likert}
+
+  labs <- c(
+    "4. Encourages me to reflect more on my professional development",
+    "5. Encourages me to participate in more educational activities", 
+    "6. Has resulted in changes in my practice",
+    "7. Provides benefits that are worth the time, effort and expense involved" 
+  )
+ 
+  part <- likert_data(data, "part_", labs) 
+  likert_plot_group(part, 1, length(labs), "all") +
+    theme(axis.text.y = element_blank())
+  
+```
+
+By intent to comply (yes/no)
+```{r part_likert_intends}
+
+  likert_plot_group(part, 1, length(labs), "binary_intention") 
+
+```
+
+How do all of these items relate to intention?
+```{r beliefs_intends_bar_plot}
+
+  df <- select(
+    data, starts_with("mpc_"), starts_with("part_"), agree_21_tickbox, intends
+    ) %>%
+    gather(var, val, -intends) %>%
+    mutate(val = factor(val, levels = levels(factor(val))[c(4, 1, 3, 2, 5)])) %>%
+    mutate(var = gsub("mpc_", "", var)) %>%
+    mutate(var = gsub("part_", "", var)) %>%
+    mutate(var = gsub("agree_", "", var)) 
+
+
+  ggplot(df, aes(x = val, fill = intends)) +
+    geom_bar(position = "fill") +
+    scale_fill_viridis("", discrete = TRUE, 
+                       guide = guide_legend(reverse = TRUE)) +
+    facet_wrap(~var, nrow = 2) +
+    ylab("Proportion") +
+    xlab("") +
+    coord_flip() +
+    theme_minimal() +
+    theme(legend.position = "bottom", 
+          axis.text.x = element_text(size = 8, angle = 90, hjust = 1),
+          panel.grid = element_blank(), 
+          strip.text = element_text(size = 8))
+  
+  # +
+  #   theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+```
+
+```{r}
+
+  levs <- c("Disagree", "Neither agree nor disagree", "Agree",	
+            "Strongly agree")
+
+  orm_models <- function(data, var_names, ...){
+    options(contrasts = c("contr.treatment", "contr.treatment"))
+    model_frame <- data_frame()
+    for(i in var_names){
+      form <- as.formula(paste0("intends ~ ", i))
+      m <- orm(form, data = data)
+      p <- anova(m)
+      model_frame <- bind_rows(
+        data_frame(
+          quest = i,
+          var = gsub(paste0(i, "="), "", 
+                     names(m$coeff)[!grepl("y>=", names(m$coeff))]), 
+          logodds = m$coeff[!grepl("y>=", names(m$coeff))], 
+          se = sqrt(diag(m$var)[!grepl("y>=", names(diag(m$var)))]), 
+          or = exp(logodds),
+          ul = exp(logodds + 1.96*se),
+          ll = exp(logodds - 1.96*se), 
+          p_cat = cut(p[i, ][3], c(0, 0.001, 0.01, 0.05, 1), 
+                          include.lowest = TRUE)
+        ), 
+        model_frame
+      ) %>%
+       mutate(var = factor(var, levels = levs)) 
+    }
+    return(model_frame)
+  }
+
+# options(contrasts = c("contr.treatment", "contr.poly")) # Normal settings
+
+
+```
+
+Proportional odds models for intent regressed on each item
+```{r}
+
+  var_names <- names(select(data, starts_with("mpc_"), starts_with("part_"),
+                            agree_21_tickbox))
+
+  df <- orm_models(data, var_names)
+
+  ggplot(df, aes(x = var, y = or, ymax = ul, ymin = ll, color = p_cat)) +
+    geom_pointrange() +
+    geom_hline(yintercept = 1, linetype = "dashed") +
+    theme_minimal() +
+    facet_wrap(~quest) +
+    ylab("OR (95% CI)") +
+    xlab("") +
+    scale_color_viridis("LRT p-value", discrete = TRUE) +
+    coord_flip() +
+    theme(strip.text = element_text(size = 8))
+  
+```
+
+## F2: Items 8-15 & 26: Barriers to Engagement with Maintenance of Professional Competence
+
+```{r dfsummary_f2, eval = knitr::opts_knit$get("rmarkdown.pandoc.to") == "html"}
+
+  df <- select(data, starts_with("barrier_"), agree_26_pcsusedagainstme)
+
+  print(summarytools::dfSummary(df, style = "grid", plain.ascii = FALSE), 
+        method = "render")
+```
+
+Please indicate your agreement with these statements about BARRIERS to your own engagement with Maintenance of Professional Competence in Ireland
+```{r barrier_likert_1}
+
+  labs <- c(
+    "08. I do not understand what I am required to do for Maintenance of Professional Competence",
+    "09. Lack of protected time makes it difficult to undertake activities to earn points",
+    "10. The expense of the annual Professional Competence Scheme fee is a barrier", 
+    "11. The expense of Continuing Professional Development(CPD) activities is a barrier", 
+    "12. The expense of paying a locum to allow me to attend CPD activities is a barrier", 
+    "13. The requirement to record my learning activities through an online platform has been a barrier", 
+    "14. Lack of audit skills has been a barrier", 
+    "15. Difficulty identifying a suitable audit topic has been a barrier"
+  )
+ 
+  barrier <- likert_data(data, "barrier_", labs) 
+  likert_plot_group(barrier, 1, 4, "all") +
+    theme(axis.text.y = element_blank())
+  
+```
+
+```{r barrier_likert_2}
+
+  likert_plot_group(barrier, 5, 8, "all") +
+    theme(axis.text.y = element_blank())
+
+```
+
+By intent to comply (yes/no)
+
+```{r barrier_likert_1_intends}
+
+  likert_plot_group(barrier, 1, 4, "binary_intention") 
+
+```
+
+```{r barrier_likert_2_intends}
+
+  likert_plot_group(barrier, 5, 8, "binary_intention") 
+
+```
+
+How do all of these items relate to intention?
+```{r}
+
+  df <- select(
+    data, starts_with("barrier_"), agree_26_pcsusedagainstme, intends
+    ) %>%
+    gather(var, val, -intends) %>%
+    mutate(val = factor(val, levels = levels(factor(val))[c(4, 1, 3, 2, 5)])) %>%
+    mutate(var = gsub("barrier_", "", var)) %>%
+    mutate(var = gsub("engage_", "", var)) %>%
+    mutate(var = gsub("agree_", "", var)) %>%
+    filter(!is.na(val))
+
+
+  ggplot(df, aes(x = val, fill = intends)) +
+    geom_bar(position = "fill") +
+    scale_fill_viridis("", discrete = TRUE, 
+                       guide = guide_legend(reverse = TRUE)) +
+    facet_wrap(~var) +
+    ylab("Proportion") +
+    xlab("") +
+    coord_flip() +
+    theme_minimal() +
+    theme(legend.position = "bottom", 
+          axis.text.x = element_text(size = 8, angle = 90, hjust = 1),
+          panel.grid = element_blank(), 
+          strip.text = element_text(size = 8))
+
+```
+
+Proportional odds models for intent regressed on each item
+```{r}
+
+  var_names <- names(select(data, starts_with("barrier_"), 
+                            agree_26_pcsusedagainstme))
+
+  df <- orm_models(data, var_names)
+
+  ggplot(df, aes(x = var, y = or, ymax = ul, ymin = ll, color = p_cat)) +
+    geom_pointrange() +
+    geom_hline(yintercept = 1, linetype = "dashed") +
+    theme_minimal() +
+    facet_wrap(~quest) +
+    ylab("OR (95% CI)") +
+    xlab("") +
+    scale_color_viridis("LRT p-value", discrete = TRUE) +
+    coord_flip() +
+    theme(strip.text = element_text(size = 8))
+  
+```
+
+
+## F3: Items 17-20: Facilitators of Engagement with Maintenance of Professional Competence
+```{r dfsummary_f3, eval = knitr::opts_knit$get("rmarkdown.pandoc.to") == "html"}
+
+  df <- select(data, starts_with("engage_"))
+
+  print(summarytools::dfSummary(df, style = "grid", plain.ascii = FALSE), 
+          method = "render")
+```
+
+Please indicate your agreement with the following statements about factors which SUPPORT your own engagement with Maintenance of Professional Competence in Ireland
+```{r engage_likert}
+
+  labs <- c(
+    "17. The CPD activities I need to address gaps in my knowledge and practice are currently available",
+    "18. I can access high quality CPD activities",
+    "19. My Professional Competence Scheme provides enough flexible ways to meet requirements",
+    "20. My Professional Competence Scheme provides useful information to help me to meet requirements"
+  )
+ 
+  engage <- likert_data(data, "engage_", labs) 
+  likert_plot_group(engage, 1, length(labs), "all") +
+    theme(axis.text.y = element_blank())
+  
+```
+
+By intent to comply (yes/no)
+```{r engage_likert_intends}
+
+  likert_plot_group(engage, 1, length(labs), "binary_intention") 
+
+```
+
+How do all of these items relate to intention?
+```{r}
+
+  df <- select(
+    data, starts_with("engage_"), intends
+    ) %>%
+    gather(var, val, -intends) %>%
+    mutate(val = factor(val, levels = levels(factor(val))[c(4, 1, 3, 2, 5)])) %>%
+    mutate(var = gsub("engage_", "", var)) %>%
+    mutate(var = gsub("agree_", "", var)) %>%
+    filter(!is.na(val))
+
+
+  ggplot(df, aes(x = val, fill = intends)) +
+    geom_bar(position = "fill") +
+    scale_fill_viridis("", discrete = TRUE, 
+                       guide = guide_legend(reverse = TRUE)) +
+    facet_wrap(~var) +
+    ylab("Proportion") +
+    xlab("") +
+    coord_flip() +
+    theme_minimal() +
+    theme(legend.position = "bottom", 
+          axis.text.x = element_text(size = 8, angle = 90, hjust = 1),
+          panel.grid = element_blank(), 
+          strip.text = element_text(size = 8))
+
+```
+
+Proportional odds models for intent regressed on each item
+```{r}
+
+  var_names <- names(select(data, starts_with("engage_")))
+
+  df <- orm_models(data, var_names)
+
+  ggplot(df, aes(x = var, y = or, ymax = ul, ymin = ll, color = p_cat)) +
+    geom_pointrange() +
+    geom_hline(yintercept = 1, linetype = "dashed") +
+    theme_minimal() +
+    facet_wrap(~quest) +
+    ylab("OR (95% CI)") +
+    xlab("") +
+    scale_color_viridis("LRT p-value", discrete = TRUE) +
+    coord_flip() +
+    theme(strip.text = element_text(size = 8))
+  
+```
+
+
+## F4: Items 27-29: Social Norms relating to Maintenance of Professional Competence
+
+```{r dfsummary_f4, eval = knitr::opts_knit$get("rmarkdown.pandoc.to") == "html"}
+
+  df <- select(data, agree_27_importantforpts:agree_29_riskremoval)
+
+  print(summarytools::dfSummary(df, style = "grid", plain.ascii = FALSE), 
+          method = "render")
+```
+
+```{r social_likert}
+
+  labs <- c(
+    "21. Maintenance of Professional Competence is a tick box exercise",
+    "22. I match my CPD activities to gaps in my knowledge and practice",
+    "23. I would welcome the opportunity to use patient feedback to demonstrate my professional competence",
+    "24. I would welcome the opportunity to use feedback from colleagues to demonstrate my professional competence",
+    "25. I would welcome the opportunity to submit a quality improvement initiative rather than an audit",
+    "26. I am concerned that information I provide to my Professional Competence Scheme about my knowledge and practice could be used against me if my competence was in question",
+    "27. It is important to my patients that I meet the requirements for Professional Competence",
+    "28. It is important to my colleagues that I meet the requirements for Professional Competence",
+    "29. Doctors who do not participate in Maintenance of Competence risk being removed from the register",
+    "30. I am confident that I can fulfil the requirements for Maintenance of Competence"
+  )
+ 
+  social <- likert_data(data, "agree_", labs) 
+  likert_plot_group(social, 7, 9, "all") +
+    theme(axis.text.y = element_blank())
+  
+```
+
+Intends to comply
+```{r social_likert_intends}
+
+  likert_plot_group(social, 7, 9, "binary_intention") 
+
+```
+
+How do all of these items relate to intention?
+```{r social_intends_bar_plot}
+
+  df <- select(data, agree_27_importantforpts:agree_29_riskremoval, intends) %>%
+    gather(var, val, -intends) %>%
+    mutate(val = factor(val, levels = levels(factor(val))[c(4, 1, 3, 2, 5)])) %>%
+    mutate(var = gsub("agree_", "", var)) %>%
+    filter(!is.na(val))
+
+
+  ggplot(df, aes(x = val, fill = intends)) +
+    geom_bar(position = "fill") +
+    scale_fill_viridis("", discrete = TRUE, 
+                       guide = guide_legend(reverse = TRUE)) +
+    facet_wrap(~var) +
+    ylab("Proportion") +
+    xlab("") +
+    coord_flip() +
+    theme_minimal() +
+    theme(legend.position = "bottom", 
+          axis.text.x = element_text(size = 8, angle = 90, hjust = 1),
+          panel.grid = element_blank(), 
+          strip.text = element_text(size = 8))
+
+```
+
+Proportional odds models for intent regressed on each item
+```{r}
+
+  var_names <- names(select(data, agree_27_importantforpts:agree_29_riskremoval))
+
+  df <- orm_models(data, var_names)
+
+  ggplot(df, aes(x = var, y = or, ymax = ul, ymin = ll, color = p_cat)) +
+    geom_pointrange() +
+    geom_hline(yintercept = 1, linetype = "dashed") +
+    theme_minimal() +
+    facet_wrap(~quest) +
+    ylab("OR (95% CI)") +
+    xlab("") +
+    scale_color_viridis("LRT p-value", discrete = TRUE) +
+    coord_flip() +
+    theme(strip.text = element_text(size = 8))
+  
+```
+
+# Full CFA
+
+These are based on the reduced data set (n = `r nrow(data_cfa)`) with observations dropped for missing values for measurements used in the CFA.
+
+```{r cfa_full}
+
+  full <- '
+    Beliefs_f1 =~ mpc_01_reassurespublic + mpc_02_encouragesdoctors + 
+      mpc_03_raisesstandards + part_04_encouragesmereflect + 
+      part_05_encouragesmeeducation + part_06_resultchangeinpractice +
+      part_07_worthtimeeffortexpense + agree_21_tickbox
+      
+    Barriers_f2 =~ barrier_08_dontunderstandreq + barrier_09_lackprottime + 
+      barrier_10_pcsfeeabarrier + barrier_11_cpdexpenseabarrier + 
+      barrier_13_onlineplatformabarrier + 
+      barrier_14_lackauditskillsabarrier + barrier_15_topicabarrier + 
+      agree_26_pcsusedagainstme
+      
+    Engage_f3 =~ engage_17_cpdaddressesgaps + engage_18_cpdaccessible + 
+      engage_19_pcsflexible + engage_20_pcsinfosufficient
+      
+    Social_f4 =~ agree_27_importantforpts + agree_28_importantforcolleagues + 
+      agree_29_riskremoval  
+  '
+  full_m <- cfa(full, data = data_cfa)
+# summary(full_m, standardized = TRUE, rsquare = TRUE, ci = TRUE,
+#         fit.measures = TRUE)
+
+  x <- predict(full_m)
+
+#  data$beliefs <- as.numeric(predict(beliefs_m))
+  
+  data_cfa$beliefs_f1  <- x[, 1]
+  data_cfa$barriers_f2 <- x[, 2]
+  data_cfa$engage_f3   <- x[, 3]
+  data_cfa$social_f4   <- x[, 4]
+
+
+```
+
+```{r full_cfa_density}
+
+  labs <- c("Barriers (F2)", "Beliefs (F1)", "Engage (F3)", "Social (F4)")
+
+  select(data_cfa, beliefs_f1:social_f4, intends) %>%
+    gather(factor, value, -intends) %>%
+    mutate(factor = factor(factor, labels = labs)) %>%
+    mutate(factor = factor(
+      factor, levels = levels(factor(factor))[c(2, 1, 3, 4)]
+      )) %>%
+  ggplot(aes(x = value, fill = intends)) +
+    geom_density(alpha = 0.4) +
+    geom_density(fill = "white", alpha = 0, size = 1, linetype = "dashed") +
+    theme_minimal() +
+    facet_wrap(~factor) + 
+    ylab("Density") +
+    xlab("Factor score") +
+    scale_fill_viridis("", discrete = TRUE)
+
+```
+
+
+```{r factor_histogram_function}
+
+  bar_factor <- function(variable, label, ...){
+
+  g1 <- ggplot(data_cfa, aes(x = get(variable), fill = intends)) +
+    geom_histogram() +
+    theme_minimal() +
+    ylab("Number of respondents") +
+    xlab("") +
+    scale_fill_viridis(guide = FALSE, discrete = TRUE)
+
+  g2 <- ggplot(data_cfa, aes(x = get(variable), fill = intends)) +
+      geom_histogram(position = "fill") +
+      theme_minimal() +
+      ylab("Proportion of respondents") +
+      xlab(label) +
+      scale_fill_viridis("", discrete = TRUE) +
+      theme(legend.position = "bottom")
+
+  return(grid.arrange(g1, g2, ncol = 1))
+  
+  }
+
+```
+
+```{r }
+ 
+  bar_factor("beliefs_f1", "Beliefs (F1) score")  
+
+```
+
+```{r }
+ 
+  bar_factor("barriers_f2", "Barriers (F2) score")  
+
+```
+
+```{r }
+ 
+  bar_factor("engage_f3", "Engage (F3) score")  
+
+```
+
+```{r }
+ 
+  bar_factor("social_f4", "Social (F4) score")  
+
+```
+
+```{r}
+  parameterEstimates(full_m, standardized = TRUE) %>% 
+    filter(op == "=~") %>% 
+    select("Latent Factor" = lhs, Indicator = rhs, B = est, SE = se, Z = z,
+           'p-value' = pvalue, Beta = std.all) %>% 
+    kable(digits = 3, format = "pandoc", caption = "Factor Loadings")
+```
+
+
+```{r}
+  parameterEstimates(full_m, standardized = TRUE) %>% 
+    filter(op == "~~", 
+           lhs %in% c("Beliefs_f1", "Barriers_f2", "Barriers_f2"), 
+           !is.na(pvalue)) %>% 
+    select('Factor 1' = lhs, 
+           'Factor 2' = rhs, 
+           Correlation = est, 
+           "P value" = pvalue) %>% 
+    kable(digits = 3, format = "pandoc",
+          caption = "Latent Factor Correlations")
+```
+
+
+```{r}
+  data_frame(
+    Measure = names(fitMeasures(full_m)), 
+    Value = fitMeasures(full_m)
+    ) %>% 
+  filter(Measure %in% c("chisq", "df", "pvalue", "cfi", "tli", "rmsea",
+                        "rmsea.pvalue")) %>% 
+  kable(digits = 3, format = "pandoc", caption = "Model fit")
+```
+
+# Proportional odds models for intends
+
+These are based on the reduced data set (n = `r nrow(data_cfa)`) with observations dropped for missing values for measurements used in the CFA (as factor scores are used as predictors in these models).
+
+```{r}
+# gender, country_groups, division, role, service model, passport country 
+
+  d <- datadist(data_cfa)
+  options(datadist = "d")
+
+  m <- orm(intends ~ rcs(beliefs_f1, 5) + rcs(barriers_f2, 5) + 
+             rcs(engage_f3, 5) + rcs(social_f4, 5) + 
+             country_groups + sex + division +
+             role + servicemodel + passport_ireland, 
+           data = data_cfa)
+  df <- data_frame(
+          var = names(m$coeff)[!grepl("y>=", names(m$coeff))], 
+          level = names(m$coeff)[!grepl("y>=", names(m$coeff))], 
+          logodds = m$coeff[!grepl("y>=", names(m$coeff))], 
+          se = sqrt(diag(m$var)[!grepl("y>=", names(diag(m$var)))]), 
+          or = exp(logodds),
+          ul = exp(logodds + 1.96*se),
+          ll = exp(logodds - 1.96*se)
+        )
+  
+  df$var <- gsub("=.*$", "", df$var) # Keep just the variable names
+  df$level <- gsub(".*=", "", df$level) # Keep just the variable levels
+  
+  k <- 1
+  for(i in df$var){
+    if(i %in% names(data)){
+      if(is.factor(data[[i]])){
+        df$var[k] <- paste0(
+          i, " (ref = ", levels(data[[i]])[1], ")"
+        )
+      }
+      else(df$var[k] <- df$var[k])
+    }
+    else(df$var[k] <- df$var[k])
+    k <- k + 1
+  }
+  
+```
+
+```{r}
+
+  knitr::kable(signif(anova(m), 2))
+
+```
+
+```{r}
+  ggplot(Predict(m, beliefs_f1)) + theme_minimal()
+```
+
+```{r}
+  ggplot(Predict(m, barriers_f2)) + theme_minimal()
+```
+
+```{r}
+  ggplot(Predict(m, engage_f3)) + theme_minimal()
+```
+
+```{r}
+  ggplot(Predict(m, social_f4)) + theme_minimal()
+```
+
+
+```{r}
+
+  or_plot <- function(data, ...){
+    g <- ggplot(data, 
+           aes(x = level, y = or, ymax = ul, ymin = ll, color = var)) +
+      geom_pointrange() +
+      geom_hline(yintercept = 1, linetype = "dashed") +
+      theme_minimal() +
+      ylab("OR (95% CI)") +
+      xlab("") +
+      facet_wrap(~var, scales = "free_y", ncol = 1) +
+      coord_flip() +
+      scale_color_viridis(guide = FALSE, discrete = TRUE, end = 0.8) +
+      theme(axis.text.x = element_text(size = 8))
+  
+    return(g)
+  }
+
+  or_plot(
+    filter(df[17:nrow(df), ], var == "role (ref = Community Health Doctor)")
+  )
+
+```
+
+```{r}
+  or_plot(
+    filter(df[17:nrow(df), ], var != "role (ref = Community Health Doctor)")
+  )
+```
+
+
+# Proportional odds models for confidence
+
+These are based on the reduced data set (n = `r nrow(data_cfa)`) with observations dropped for missing values for measurements used in the CFA (as factor scores are used as predictors in these models).
+
+```{r}
+# gender, country_groups, division, role, service model, passport country 
+
+  d <- datadist(data_cfa)
+  options(datadist = "d")
+
+  m <- orm(agree_30_confidencefulfillreq ~ rcs(beliefs_f1, 5) + 
+             rcs(barriers_f2, 5) + 
+             rcs(engage_f3, 5) + rcs(social_f4, 5) + 
+             country_groups + sex + division +
+             role + servicemodel + passport_ireland, 
+           data = data_cfa)
+  df <- data_frame(
+          var = names(m$coeff)[!grepl("y>=", names(m$coeff))], 
+          level = names(m$coeff)[!grepl("y>=", names(m$coeff))], 
+          logodds = m$coeff[!grepl("y>=", names(m$coeff))], 
+          se = sqrt(diag(m$var)[!grepl("y>=", names(diag(m$var)))]), 
+          or = exp(logodds),
+          ul = exp(logodds + 1.96*se),
+          ll = exp(logodds - 1.96*se)
+        )
+  
+  df$var <- gsub("=.*$", "", df$var) # Keep just the variable names
+  df$level <- gsub(".*=", "", df$level) # Keep just the variable levels
+  
+  k <- 1
+  for(i in df$var){
+    if(i %in% names(data)){
+      if(is.factor(data[[i]])){
+        df$var[k] <- paste0(
+          i, " (ref = ", levels(data[[i]])[1], ")"
+        )
+      }
+      else(df$var[k] <- df$var[k])
+    }
+    else(df$var[k] <- df$var[k])
+    k <- k + 1
+  }
+  
+```
+
+```{r}
+
+  knitr::kable(signif(anova(m), 2))
+
+```
+
+```{r}
+  ggplot(Predict(m, beliefs_f1)) + theme_minimal()
+```
+
+```{r}
+  ggplot(Predict(m, barriers_f2)) + theme_minimal()
+```
+
+```{r}
+  ggplot(Predict(m, engage_f3)) + theme_minimal()
+```
+
+```{r}
+  ggplot(Predict(m, social_f4)) + theme_minimal()
+```
+
+
+```{r}
+
+  or_plot(
+    filter(df[17:nrow(df), ], var == "role (ref = Community Health Doctor)")
+  )
+
+```
+
+```{r}
+  or_plot(
+    filter(df[17:nrow(df), ], var != "role (ref = Community Health Doctor)")
+  )
+```
+
+# The relationship between gender, country_groups, division and questionnaire responses, using the binary responses. 
+
+These are based on the full data set (n = `r nrow(data)`) with no observations dropped for missing data.
+
+## Sex
+
+```{r}
+
+  select(data, sex, starts_with("binary")) %>%
+    gather(var, val, starts_with("binary")) %>%
+    mutate(var = gsub("binary_", "", var)) %>%
+
+  ggplot(aes(x = sex, fill = val)) +
+    geom_bar(position = "fill") +
+    facet_wrap(~var) + 
+    ylab("Proportion") +
+    scale_fill_viridis("", discrete = TRUE, end = 0.5, na.value = "grey50") +
+    theme_minimal() +
+    theme(strip.text = element_text(size = 8))
+
+```
+
+```{r}
+
+  df <- data_frame()
+  for(i in names(select(data, starts_with("binary_")))){
+    
+    test <- chisq.test(data[["sex"]], data[[i]])
+    df <- bind_rows(
+      df, 
+      data_frame(var = i, 
+                 p = signif(test$p.value, 3))
+    )
+  }
+
+  df <- df[order(df$p), ]
+
+  df$m    <- nrow(df)
+  df$i    <- c(1:nrow(df))
+  df$q    <- 0.05
+  df$fdrp <- with(df, i / m * q)
+  df$sig  <- df$p <= df$fdrp
+  
+  kable(df)
+  
+```
+
+## Division
+
+```{r}
+
+  select(data, division, starts_with("binary")) %>%
+    gather(var, val, starts_with("binary")) %>%
+    mutate(var = gsub("binary_", "", var)) %>%
+
+  ggplot(aes(x = division, fill = val)) +
+    geom_bar(position = "fill") +
+    facet_wrap(~var) + 
+    ylab("Proportion") +
+    scale_fill_viridis("", discrete = TRUE, end = 0.5, na.value = "grey50") +
+    theme_minimal() +
+    theme(strip.text = element_text(size = 8), 
+          axis.text.x = element_text(size = 8, angle = 90, hjust = 1))
+
+```
+
+```{r}
+
+  df <- data_frame()
+  for(i in names(select(data, starts_with("binary_")))){
+    
+    test <- chisq.test(data[["division"]], data[[i]])
+    df <- bind_rows(
+      df, 
+      data_frame(var = i, 
+                 p = signif(test$p.value, 3))
+    )
+  }
+
+  df <- df[order(df$p), ]
+
+  df$m    <- nrow(df)
+  df$i    <- c(1:nrow(df))
+  df$q    <- 0.05
+  df$fdrp <- with(df, i / m * q)
+  df$sig  <- df$p <= df$fdrp
+  
+  kable(df)
+  
+```
+
+## Country groups
+
+```{r}
+
+  select(data, country_groups, starts_with("binary")) %>%
+    gather(var, val, starts_with("binary")) %>%
+    mutate(var = gsub("binary_", "", var)) %>%
+
+  ggplot(aes(x = country_groups, fill = val)) +
+    geom_bar(position = "fill") +
+    facet_wrap(~var) + 
+    ylab("Proportion") +
+    scale_fill_viridis("", discrete = TRUE, end = 0.5, na.value = "grey50") +
+    theme_minimal() +
+    theme(strip.text = element_text(size = 8), 
+          axis.text.x = element_text(size = 8, angle = 90, hjust = 1))
+
+```
+
+```{r}
+
+  df <- data_frame()
+  for(i in names(select(data, starts_with("binary_")))){
+    
+    test <- chisq.test(data[["country_groups"]], data[[i]])
+    df <- bind_rows(
+      df, 
+      data_frame(var = i, 
+                 p = signif(test$p.value, 3))
+    )
+  }
+
+  df <- df[order(df$p), ]
+
+  df$m    <- nrow(df)
+  df$i    <- c(1:nrow(df))
+  df$q    <- 0.05
+  df$fdrp <- with(df, i / m * q)
+  df$sig  <- df$p <= df$fdrp
+  
+  kable(df)
+  
+```
+
+
+
+
+```{r}
+# Ok, this is weird. If you plot the new factor scores, it shows a strong
+# pattern in the data when orderd as they are. (goes away if you reorder by ID)
+
+  # data$weird_row <- 1:nrow(data)
+  # 
+  # ggplot(data, aes(y = beliefs_f1, x = weird_row)) +
+  #   geom_point() +
+  #   xlab("Original sorting") +
+  #   ylab("Beliefs (F1) CFA score") +
+  #   theme_minimal()
+  
+# for(i in names(data)){
+#   ggplot(data, aes(y = beliefs, x = weird_row, color = get(i))) +
+#   geom_point() +
+#   ggtitle(i)
+#   
+#   ggsave(paste0("plots/", i, ".png"))
+# }
+
+```
+
+
+```{r}
+# Looked at the plots and get perfect discrimination by these three variables
+
+# table(data$binary_pcsfeeabarrier)
+# table(data$binarystandards)
+# table(data$binaryworthit)
+  
+  # ggplot(
+  #   data, 
+  #     aes(
+  #       y = beliefs, x = weird_row, color = interaction(
+  #         binary_pcsfeeabarrier, 
+  #         binarystandards,                                                                 
+  #         binaryworthit
+  #         )
+  #       )
+  #   ) +
+  #   geom_point() +
+  #   scale_color_brewer("Fee, Stdrds, Worth", palette = "Set1") +
+  #   theme_minimal() +
+  #   theme(legend.position = "bottom") +
+  #   xlab("Original sorting") +
+  #   ylab("Beliefs (F1) factor score")
+  
+# standards and worthit are binary version of 2 of the likert scale indicators
+# included in the belief model. So in the plot below, the first 4 bands are all
+# No on pcsfeesabarrier, and the second 4 are Yes. Then, for each quartet, you
+# get the same pattern with respect to the other 2: No-No, No-Yes, Yes-No,
+# Yes-Yes.   
+  
+# Conclusion - is it just a conicidence that they were sorted this way, on 
+# variables that happened to be included in the CFA?
+
+```
